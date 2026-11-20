@@ -13,7 +13,24 @@ return new class extends Migration
     {
         Schema::create('saved_posts', function (Blueprint $table) {
             $table->id();
+            $table->foreignId('user_id')->constrained('users')->cascadeOnDelete();
+            $table->foreignId('post_id')->constrained('posts')->cascadeOnDelete();
             $table->timestamps();
+
+            $table->unique(['user_id', 'post_id']);
+        });
+
+        Schema::create('notifications', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('user_id')->constrained('users')->cascadeOnDelete();
+            $table->foreignId('actor_id')->nullable()->constrained('users')->nullOnDelete();
+            $table->foreignId('post_id')->nullable()->constrained('posts')->cascadeOnDelete();
+            $table->string('type', 40);
+            $table->text('message');
+            $table->boolean('is_read')->default(false);
+            $table->timestamps();
+
+            $table->index(['user_id', 'is_read'], 'idx_notifications_user_read');
         });
     }
 
@@ -22,6 +39,7 @@ return new class extends Migration
      */
     public function down(): void
     {
+        Schema::dropIfExists('notifications');
         Schema::dropIfExists('saved_posts');
     }
 };
