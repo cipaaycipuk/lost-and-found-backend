@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Notification;
 use App\Models\Post;
 use App\Models\SavedPost;
 use App\Models\User;
@@ -91,6 +92,17 @@ class SavedPostController extends Controller
             'user_id' => $user->id,
             'post_id' => $post->id,
         ]);
+
+        if ($post->user_id !== $user->id) {
+            Notification::create([
+                'user_id' => $post->user_id,
+                'actor_id' => $user->id,
+                'post_id' => $post->id,
+                'type' => 'bookmark',
+                'message' => "{$user->name} menyimpan laporan Anda \"{$post->title}\".",
+                'is_read' => false,
+            ]);
+        }
 
         return response()->json([
             'success' => true,

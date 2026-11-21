@@ -19,7 +19,8 @@ class NotificationController extends Controller
 
         $notifications = Notification::query()
             ->where('user_id', $user->id)
-            ->latest()
+            ->with(['actor', 'post'])
+            ->latest('id')
             ->get()
             ->map(fn (Notification $notification): array => $notification->toApiArray())
             ->values()
@@ -48,6 +49,7 @@ class NotificationController extends Controller
         }
 
         $notification->update(['is_read' => true]);
+        $notification->load(['actor', 'post']);
 
         return response()->json([
             'success' => true,

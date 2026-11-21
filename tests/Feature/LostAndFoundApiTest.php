@@ -209,17 +209,38 @@ class LostAndFoundApiTest extends TestCase
             ->assertJsonCount(1, 'data.0.replies')
             ->assertJsonPath('data.1.isReply', true);
 
-        // Post owner received notification for the reply from otherUser
+        // Post owner received notification for the reply from otherUser, complete with post URLs
         Sanctum::actingAs($user);
         $notifResponse = $this->getJson('/api/notifications');
         $notifResponse->assertOk()
             ->assertJsonCount(1, 'data')
-            ->assertJsonPath('data.0.isRead', false);
+            ->assertJsonPath('data.0.isRead', false)
+            ->assertJsonPath('data.0.post_id', $post->id)
+            ->assertJsonPath('data.0.url', "/?post={$post->id}")
+            ->assertJsonPath('data.0.post.id', $post->id);
 
+        // Author of root comment (user) and any other commenter also receive notifications cleanly
+        $thirdUser = User::factory()->create();
+        Sanctum::actingAs($thirdUser);
+        $this->postJson("/api/posts/{$post->id}/comments", [
+            'content' => 'Saya juga lihat tadi di parkiran!',
+            'parent_id' => $parentId,
+        ])->assertStatus(201);
+
+        // Both post owner ($user) and earlier replier ($otherUser) get notified
+        Sanctum::actingAs($otherUser);
+        $otherNotifs = $this->getJson('/api/notifications');
+        $otherNotifs->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.type', 'reply')
+            ->assertJsonPath('data.0.url', "/?post={$post->id}");
+
+        Sanctum::actingAs($user);
         $notifId = $notifResponse->json('data.0.id');
         $this->patchJson("/api/notifications/{$notifId}/read")
             ->assertOk()
-            ->assertJsonPath('data.isRead', true);
+            ->assertJsonPath('data.isRead', true)
+            ->assertJsonPath('data.url', "/?post={$post->id}");
 
         $this->patchJson('/api/notifications/read-all')
             ->assertOk()

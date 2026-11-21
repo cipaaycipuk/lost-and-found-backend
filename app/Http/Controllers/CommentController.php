@@ -8,6 +8,7 @@ use App\Models\Post;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class CommentController extends Controller
@@ -78,30 +79,59 @@ class CommentController extends Controller
             'content' => $validated['content'],
         ]);
 
-        if ($targetPost->user_id !== $user->id) {
-            Notification::create([
-                'user_id' => $targetPost->user_id,
-                'actor_id' => $user->id,
-                'post_id' => $targetPost->id,
-                'type' => $parentComment !== null ? 'reply' : 'comment',
-                'message' => "{$user->name} mengomentari laporan \"{$targetPost->title}\"",
-                'is_read' => false,
-            ]);
-        }
+        $excerpt = Str::limit(trim($validated['content']), 60);
+        $notifiedUserIds = [$user->id];
 
-        if (
-            $parentComment !== null &&
-            $parentComment->user_id !== $user->id &&
-            $parentComment->user_id !== $targetPost->user_id
-        ) {
+        // 1. Jika ini adalah balasan (reply) atas komentar seseorang, beri notifikasi ke pemilik komentar induk
+        if ($parentComment !== null && ! in_array($parentComment->user_id, $notifiedUserIds, true)) {
             Notification::create([
                 'user_id' => $parentComment->user_id,
                 'actor_id' => $user->id,
                 'post_id' => $targetPost->id,
                 'type' => 'reply',
-                'message' => "{$user->name} membalas komentar Anda pada laporan \"{$targetPost->title}\"",
+                'message' => "{$user->name} membalas komentar Anda pada laporan \"{$targetPost->title}\": \"{$excerpt}\"",
                 'is_read' => false,
             ]);
+            $notifiedUserIds[] = $parentComment->user_id;
+        }
+
+        // 2. Beri notifikasi ke pemilik post (baik untuk komentar baru maupun balasan di post miliknya)
+        if (! in_array($targetPost->user_id, $notifiedUserIds, true)) {
+            $message = $parentComment !== null
+                ? "{$user->name} membalas komentar pada laporan Anda \"{$targetPost->title}\": \"{$excerpt}\""
+                : "{$user->name} mengomentari laporan Anda \"{$targetPost->title}\": \"{$excerpt}\"";
+
+            Notification::create([
+                'user_id' => $targetPost->user_id,
+                'actor_id' => $user->id,
+                'post_id' => $targetPost->id,
+                'type' => $parentComment !== null ? 'reply' : 'comment',
+                'message' => $message,
+                'is_read' => false,
+            ]);
+            $notifiedUserIds[] = $targetPost->user_id;
+        }
+
+        // 3. Jika ada partisipan lain di thread balasan yang sama, beri tahu juga mereka
+        if ($parentComment !== null) {
+            $threadParticipantIds = Comment::query()
+                ->where('parent_id', $parentComment->id)
+                ->whereNotIn('user_id', $notifiedUserIds)
+                ->distinct()
+                ->pluck('user_id')
+                ->all();
+
+            foreach ($threadParticipantIds as $participantId) {
+                Notification::create([
+                    'user_id' => (int) $participantId,
+                    'actor_id' => $user->id,
+                    'post_id' => $targetPost->id,
+                    'type' => 'reply',
+                    'message' => "{$user->name} juga membalas diskusi pada laporan \"{$targetPost->title}\": \"{$excerpt}\"",
+                    'is_read' => false,
+                ]);
+                $notifiedUserIds[] = (int) $participantId;
+            }
         }
 
         $comment->load(['user', 'replies.user']);

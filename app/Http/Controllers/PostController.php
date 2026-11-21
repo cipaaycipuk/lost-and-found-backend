@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Comment;
+use App\Models\Notification;
 use App\Models\Post;
 use App\Models\SavedPost;
 use App\Models\User;
@@ -121,6 +122,15 @@ class PostController extends Controller
 
         $this->storeUploadedImages($request, $post);
 
+        Notification::create([
+            'user_id' => $user->id,
+            'actor_id' => $user->id,
+            'post_id' => $post->id,
+            'type' => 'post_created',
+            'message' => "Laporan Anda \"{$post->title}\" berhasil dipublikasikan.",
+            'is_read' => false,
+        ]);
+
         $post->load(['user', 'images'])->loadCount('comments');
 
         return response()->json([
@@ -188,6 +198,8 @@ class PostController extends Controller
             'image' => ['nullable', 'file', 'mimes:jpeg,jpg,png,webp', 'max:5120'],
         ]);
 
+        $previousStatus = $post->status;
+
         $post->fill(collect($validated)->only([
             'type',
             'status',
@@ -204,6 +216,8 @@ class PostController extends Controller
             $post->images()->delete();
             $this->storeUploadedImages($request, $post);
         }
+
+        $this->notifyPostUpdate($post, $user, $previousStatus);
 
         $post->load(['user', 'images'])->loadCount('comments');
 
@@ -355,5 +369,62 @@ class PostController extends Controller
             ->pluck('post_id')
             ->map(fn ($id): int => (int) $id)
             ->all();
+    }
+
+    /**
+     * Create notifications when a post or its status is updated.
+     */
+    private function notifyPostUpdate(Post $post, User $actor, string $previousStatus): void
+    {
+        $statusChanged = $previousStatus !== $post->status;
+        $isResolved = in_array($post->status, ['selesai', 'resolved'], true);
+        $statusLabel = $isResolved ? 'selesai' : $post->status;
+
+        $ownerMessage = $statusChanged
+            ? ($actor->id === $post->user_id
+                ? "Status laporan Anda \"{$post->title}\" telah diubah menjadi {$statusLabel}."
+                : "{$actor->name} mengubah status laporan Anda \"{$post->title}\" menjadi {$statusLabel}.")
+            : ($actor->id === $post->user_id
+                ? "Laporan Anda \"{$post->title}\" berhasil diperbarui."
+                : "{$actor->name} memperbarui laporan Anda \"{$post->title}\".");
+
+        Notification::create([
+            'user_id' => $post->user_id,
+            'actor_id' => $actor->id,
+            'post_id' => $post->id,
+            'type' => $statusChanged ? 'status_update' : 'post_updated',
+            'message' => $ownerMessage,
+            'is_read' => false,
+        ]);
+
+        if ($statusChanged) {
+            $commenterIds = Comment::query()
+                ->where('post_id', $post->id)
+                ->pluck('user_id')
+                ->all();
+
+            $bookmarkerIds = SavedPost::query()
+                ->where('post_id', $post->id)
+                ->pluck('user_id')
+                ->all();
+
+            $interestedUserIds = array_unique(array_merge($commenterIds, $bookmarkerIds));
+
+            foreach ($interestedUserIds as $recipientId) {
+                $recipientId = (int) $recipientId;
+                if ($recipientId === $post->user_id || $recipientId === $actor->id) {
+                    continue;
+                }
+
+                Notification::create([
+                    'user_id' => $recipientId,
+                    'actor_id' => $actor->id,
+                    'post_id' => $post->id,
+                    'type' => 'status_update',
+                    'message' => "Laporan \"{$post->title}\" yang Anda ikuti kini berstatus {$statusLabel}.",
+                    'is_read' => false,
+                ]);
+            }
+        }
     }
 }
