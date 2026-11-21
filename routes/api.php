@@ -10,7 +10,6 @@ use Illuminate\Support\Facades\Route;
 
 // Authentication Routes (/api/auth/* & aliases)
 Route::prefix('auth')->group(function (): void {
-    Route::post('/register', [AuthController::class, 'register']);
     Route::post('/login', [AuthController::class, 'login']);
     Route::post('/google', [AuthController::class, 'googleAuth']);
     Route::get('/google/redirect', [AuthController::class, 'redirectToGoogle']);
@@ -23,7 +22,6 @@ Route::prefix('auth')->group(function (): void {
     });
 });
 
-Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/google', [AuthController::class, 'googleAuth']);
 

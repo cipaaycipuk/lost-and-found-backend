@@ -22,30 +22,19 @@ Jalankan `php artisan migrate:fresh --seed` untuk mengisi akun berikut (Password
 
 ---
 
-## 1. Autentikasi — Manual & Google (`AuthController`)
+## 1. Autentikasi — Manual & Google Khusus `@widyatama.ac.id` (`AuthController`)
 
-Sistem mendukung **dua opsi autentikasi (Manual & via Google)** yang **menyimpan dan berbagi email yang sama (Account Linking)**:
-- Jika user daftar **Manual** terlebih dahulu lalu login **via Google** menggunakan email yang sama, sistem otomatis menautkan `google_id` ke akun tersebut (`auth_provider: "manual,google"`).
-- Jika user login **via Google** terlebih dahulu lalu daftar **Manual** (atau mengatur password di profil) dengan email yang sama, sistem otomatis menambahkan password ke akun tersebut tanpa membuat duplikat user.
+- **Wajib Domain Kampus (`@widyatama.ac.id`):** Baik login manual maupun login via Google **hanya mengizinkan email dengan akhiran `@widyatama.ac.id`**. Email selain `@widyatama.ac.id` akan langsung ditolak (`403 Forbidden`).
+- **Tanpa Endpoint Register:** Fitur registrasi mandiri telah dihapus (*takeout*).
+- **Account Linking (Email yang Sama):** Jika akun `@widyatama.ac.id` sudah terdaftar di database lalu login via Google dengan email yang sama, sistem otomatis menautkan `google_id` ke akun tersebut (`auth_provider: "manual,google"`).
 
 | Method | Endpoint | Alias | Auth | Body / Query Parameter | Deskripsi |
 |---|---|---|---|---|---|
-| `POST` | `/api/auth/register` | `/api/register` | Tidak | `name`, `email`, `password`, `whatsapp` (atau `contact`) | Registrasi manual (atau tautkan password ke akun Google dengan email yang sama) |
-| `POST` | `/api/auth/login` | `/api/login` | Tidak | `email`, `password` | Login manual & mendapatkan Bearer Token |
-| `POST` | `/api/auth/google` | `/api/google` | Tidak | `credential` / `id_token` (JWT dari Google Identity Services / `@react-oauth/google`) atau `access_token` | Verifikasi token Google asli via **Laravel Socialite (`GoogleProvider` + `firebase/php-jwt`)** & otomatis tautkan akun dengan email yang sama |
-| `GET` | `/api/auth/google/redirect` | - | Tidak | - | Redirect (atau ambil URL JSON) ke halaman OAuth 2.0 Google via **Laravel Socialite** |
-| `GET` | `/api/auth/google/callback` | - | Tidak | Query: `code` | Callback OAuth 2.0 Google via **Laravel Socialite**, tautkan akun dengan email yang sama & berikan token |
+| `POST` | `/api/auth/login` | `/api/login` | Tidak | `email` (wajib `@widyatama.ac.id`), `password` | Login manual & mendapatkan Bearer Token |
+| `POST` | `/api/auth/google` | `/api/google` | Tidak | `credential` / `id_token` (JWT dari Google Identity Services / `@react-oauth/google`) atau `access_token` | Verifikasi token Google asli via **Laravel Socialite**, wajib `@widyatama.ac.id`, & otomatis tautkan akun dengan email yang sama |
+| `GET` | `/api/auth/google/redirect` | - | Tidak | - | Redirect (atau ambil URL JSON) ke halaman OAuth 2.0 Google (`hd=widyatama.ac.id`) via **Laravel Socialite** |
+| `GET` | `/api/auth/google/callback` | - | Tidak | Query: `code` | Callback OAuth 2.0 Google via **Laravel Socialite**, tolak jika bukan `@widyatama.ac.id`, tautkan akun & berikan token |
 | `POST` | `/api/auth/logout` | `/api/logout` | **Ya** | - | Logout & mencabut (*revoke*) token aktif |
-
-### Contoh Request `POST /api/auth/register`
-```json
-{
-  "name": "Syifa Nur Aini",
-  "email": "syifa.aini@widyatama.ac.id",
-  "password": "password123",
-  "whatsapp": "0813 1212 3476"
-}
-```
 
 ### Contoh Request `POST /api/auth/login`
 ```json

@@ -15,73 +15,10 @@ use Throwable;
 
 class AuthController extends Controller
 {
-    /**
-     * Register a new user manually (or link manual password to an existing Google-only account with the same email).
-     */
-    public function register(Request $request): JsonResponse
-    {
-        if (! $request->filled('whatsapp') && $request->filled('contact')) {
-            $request->merge(['whatsapp' => $request->input('contact')]);
-        }
-
-        $validated = $request->validate([
-            'name' => ['required', 'string', 'max:100'],
-            'email' => ['required', 'string', 'email', 'max:150'],
-            'password' => ['required', 'string', 'min:6'],
-            'whatsapp' => ['required', 'string', 'max:25'],
-        ]);
-
-        $existingUser = User::where('email', $validated['email'])->first();
-
-        if ($existingUser !== null) {
-            if ($existingUser->password !== null) {
-                throw ValidationException::withMessages([
-                    'email' => ['The email has already been taken.'],
-                ]);
-            }
-
-            // Account was created via Google first (no manual password yet): link manual credentials to the same email
-            $existingUser->name = $validated['name'];
-            $existingUser->password = $validated['password'];
-            $existingUser->whatsapp = $existingUser->whatsapp ?: $validated['whatsapp'];
-            $existingUser->auth_provider = $existingUser->google_id ? 'manual,google' : 'manual';
-            $existingUser->save();
-
-            $token = $existingUser->createToken('auth_token')->plainTextToken;
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Akun Google berhasil dihubungkan dengan password manual',
-                'data' => [
-                    'token' => $token,
-                    'user' => $this->formatUser($existingUser),
-                ],
-            ], 201);
-        }
-
-        $user = User::create([
-            'name' => $validated['name'],
-            'email' => $validated['email'],
-            'password' => $validated['password'],
-            'whatsapp' => $validated['whatsapp'],
-            'auth_provider' => 'manual',
-            'role' => 'user',
-        ]);
-
-        $token = $user->createToken('auth_token')->plainTextToken;
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Registrasi berhasil',
-            'data' => [
-                'token' => $token,
-                'user' => $this->formatUser($user),
-            ],
-        ], 201);
-    }
+    private const ALLOWED_EMAIL_DOMAIN = '@widyatama.ac.id';
 
     /**
-     * Authenticate a user manually with email & password and issue an access token.
+     * Authenticate a user manually with email (@widyatama.ac.id only) & password and issue an access token.
      */
     public function login(Request $request): JsonResponse
     {
@@ -90,12 +27,24 @@ class AuthController extends Controller
             'password' => ['required', 'string'],
         ]);
 
-        $user = User::where('email', $validated['email'])->first();
+        $email = strtolower(trim($validated['email']));
+
+        if (! $this->isWidyatamaEmail($email)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya email kampus (@widyatama.ac.id) yang diperbolehkan untuk login.',
+                'errors' => [
+                    'email' => ['Hanya email kampus (@widyatama.ac.id) yang diperbolehkan untuk login.'],
+                ],
+            ], 403);
+        }
+
+        $user = User::where('email', $email)->first();
 
         if ($user !== null && $user->password === null) {
             return response()->json([
                 'success' => false,
-                'message' => 'Akun ini terdaftar melalui Google. Silakan login menggunakan Google atau daftar password dengan email yang sama.',
+                'message' => 'Akun ini terdaftar melalui Google. Silakan login menggunakan tombol Google.',
             ], 401);
         }
 
@@ -119,8 +68,8 @@ class AuthController extends Controller
     }
 
     /**
-     * Authenticate or register via real Google Auth Library (Laravel Socialite + Google JWT/OAuth2 verification).
-     * Expects `credential` / `id_token` (Google ID token JWT) or `access_token` / `token` from Google Sign-In.
+     * Authenticate via real Google Auth Library (Laravel Socialite + Google JWT/OAuth2 verification).
+     * Only @widyatama.ac.id emails are permitted. Links to existing account if email already exists.
      */
     public function googleAuth(Request $request): JsonResponse
     {
@@ -146,11 +95,20 @@ class AuthController extends Controller
             ], 401);
         }
 
-        if (! $googleUser->getEmail()) {
+        $email = strtolower(trim((string) $googleUser->getEmail()));
+
+        if ($email === '') {
             return response()->json([
                 'success' => false,
                 'message' => 'Email tidak ditemukan pada akun Google.',
             ], 422);
+        }
+
+        if (! $this->isWidyatamaEmail($email)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Hanya email kampus (@widyatama.ac.id) yang diperbolehkan untuk login.',
+            ], 403);
         }
 
         $user = $this->findOrLinkGoogleUser(
@@ -184,7 +142,13 @@ class AuthController extends Controller
 
         /** @var GoogleProvider $driver */
         $driver = Socialite::driver('google');
-        $redirectResponse = $driver->stateless()->redirect();
+        $redirectResponse = $driver
+            ->with([
+                'hd' => 'widyatama.ac.id',
+                'prompt' => 'select_account',
+            ])
+            ->stateless()
+            ->redirect();
 
         if ($request->expectsJson()) {
             return response()->json([
@@ -200,26 +164,40 @@ class AuthController extends Controller
     }
 
     /**
-     * Handle Google OAuth 2.0 callback via Laravel Socialite, link/create user with the same email, and issue token.
+     * Handle Google OAuth 2.0 callback via Laravel Socialite, enforce @widyatama.ac.id, link/create user, and issue token.
      */
     public function handleGoogleCallback(Request $request): JsonResponse|RedirectResponse
     {
+        $frontendUrl = rtrim((string) config('services.google.frontend_url', 'http://localhost:5173'), '/');
+
         try {
             /** @var GoogleProvider $driver */
             $driver = Socialite::driver('google');
             $googleUser = $driver->stateless()->user();
         } catch (Throwable $exception) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Gagal memverifikasi otorisasi Google.',
-            ], 401);
+            $errorMessage = 'Gagal memverifikasi otorisasi Google.';
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $errorMessage,
+                ], 401);
+            }
+
+            return redirect()->away($frontendUrl.'/login?error='.urlencode($errorMessage));
         }
 
-        if (! $googleUser->getEmail()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Email tidak ditemukan pada akun Google.',
-            ], 422);
+        $email = strtolower(trim((string) $googleUser->getEmail()));
+
+        if ($email === '' || ! $this->isWidyatamaEmail($email)) {
+            $errorMessage = 'Hanya email kampus (@widyatama.ac.id) yang diperbolehkan untuk login.';
+            if ($request->expectsJson()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $errorMessage,
+                ], 403);
+            }
+
+            return redirect()->away($frontendUrl.'/login?error='.urlencode($errorMessage));
         }
 
         $user = $this->findOrLinkGoogleUser($googleUser);
@@ -235,8 +213,6 @@ class AuthController extends Controller
                 ],
             ]);
         }
-
-        $frontendUrl = rtrim((string) config('services.google.frontend_url', 'http://localhost:5173'), '/');
 
         return redirect()->away($frontendUrl.'/login?token='.urlencode($token));
     }
@@ -256,11 +232,22 @@ class AuthController extends Controller
     }
 
     /**
+     * Check whether the given email belongs to the @widyatama.ac.id domain.
+     */
+    private function isWidyatamaEmail(string $email): bool
+    {
+        $normalized = strtolower(trim($email));
+
+        return strlen($normalized) > strlen(self::ALLOWED_EMAIL_DOMAIN)
+            && str_ends_with($normalized, self::ALLOWED_EMAIL_DOMAIN);
+    }
+
+    /**
      * Find an existing user by email (or google_id) and link Google account, or create a new user.
      */
     private function findOrLinkGoogleUser(SocialiteUser $googleUser, ?string $whatsapp = null): User
     {
-        $email = (string) $googleUser->getEmail();
+        $email = strtolower(trim((string) $googleUser->getEmail()));
         $googleId = (string) $googleUser->getId();
         $name = (string) ($googleUser->getName() ?: $googleUser->getNickname() ?: explode('@', $email)[0]);
         $avatar = $googleUser->getAvatar();

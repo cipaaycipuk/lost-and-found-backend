@@ -18,34 +18,39 @@ class LostAndFoundApiTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_auth_register_login_and_logout(): void
+    public function test_auth_login_enforces_widyatama_domain_and_logout(): void
     {
-        $registerResponse = $this->postJson('/api/auth/register', [
+        User::factory()->create([
             'name' => 'Syifa Nur Aini',
-            'email' => 'syifa@gmail.com',
-            'password' => 'Password123!',
+            'email' => 'syifa.aini@widyatama.ac.id',
+            'password' => 'password123',
             'whatsapp' => '081312123476',
         ]);
 
-        $registerResponse->assertStatus(201)
-            ->assertJsonPath('success', true)
-            ->assertJsonPath('data.user.email', 'syifa@gmail.com')
-            ->assertJsonStructure([
-                'success',
-                'message',
-                'data' => [
-                    'token',
-                    'user' => ['id', 'name', 'email', 'whatsapp', 'avatar_url', 'role'],
-                ],
-            ]);
+        // Register endpoint is removed (404)
+        $this->postJson('/api/auth/register', [
+            'name' => 'Test',
+            'email' => 'test@widyatama.ac.id',
+            'password' => 'password123',
+            'whatsapp' => '08123456789',
+        ])->assertStatus(404);
 
-        $loginResponse = $this->postJson('/api/auth/login', [
+        // Non-widyatama email is rejected with 403
+        $this->postJson('/api/auth/login', [
             'email' => 'syifa@gmail.com',
-            'password' => 'Password123!',
+            'password' => 'password123',
+        ])->assertStatus(403)
+            ->assertJsonPath('success', false);
+
+        // Valid @widyatama.ac.id email succeeds
+        $loginResponse = $this->postJson('/api/auth/login', [
+            'email' => 'syifa.aini@widyatama.ac.id',
+            'password' => 'password123',
         ]);
 
         $loginResponse->assertOk()
-            ->assertJsonPath('success', true);
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('data.user.email', 'syifa.aini@widyatama.ac.id');
 
         $token = $loginResponse->json('data.token');
 
@@ -290,20 +295,16 @@ class LostAndFoundApiTest extends TestCase
             ->assertJsonPath('meta.total', 3);
     }
 
-    public function test_manual_and_google_auth_share_the_same_email_account(): void
+    public function test_manual_and_google_auth_share_the_same_widyatama_email_and_reject_non_widyatama(): void
     {
-        // Case 1: Register manually first, then login via Google with the same email
-        $manualRegister = $this->postJson('/api/auth/register', [
+        // Case 1: Existing manual user (@widyatama.ac.id) logs in via Google with the same email
+        $manualUser = User::factory()->create([
             'name' => 'Mahasiswa Manual',
             'email' => 'same.email@widyatama.ac.id',
             'password' => 'Password123!',
             'whatsapp' => '081234567890',
+            'auth_provider' => 'manual',
         ]);
-
-        $manualRegister->assertStatus(201)
-            ->assertJsonPath('data.user.auth_provider', 'manual');
-
-        $manualUserId = $manualRegister->json('data.user.id');
 
         $socialiteUser1 = (new SocialiteTwoUser)->map([
             'id' => 'google-sub-12345',
@@ -324,7 +325,7 @@ class LostAndFoundApiTest extends TestCase
         ]);
 
         $googleLogin->assertOk()
-            ->assertJsonPath('data.user.id', $manualUserId)
+            ->assertJsonPath('data.user.id', $manualUser->id)
             ->assertJsonPath('data.user.email', 'same.email@widyatama.ac.id')
             ->assertJsonPath('data.user.auth_provider', 'manual,google')
             ->assertJsonPath('data.user.has_password', true);
@@ -333,60 +334,29 @@ class LostAndFoundApiTest extends TestCase
         $this->postJson('/api/auth/login', [
             'email' => 'same.email@widyatama.ac.id',
             'password' => 'Password123!',
-        ])->assertOk()->assertJsonPath('data.user.id', $manualUserId);
+        ])->assertOk()->assertJsonPath('data.user.id', $manualUser->id);
 
-        // Case 2: Login via Google first, then register manually with the same email
-        $socialiteUser2 = (new SocialiteTwoUser)->map([
-            'id' => 'google-sub-99999',
-            'name' => 'Google First User',
-            'email' => 'google.first@widyatama.ac.id',
-            'avatar' => 'https://lh3.googleusercontent.com/a/google-first',
+        // Case 2: Non-@widyatama.ac.id Google account is rejected with 403
+        $nonCampusGoogleUser = (new SocialiteTwoUser)->map([
+            'id' => 'google-sub-gmail',
+            'name' => 'Outsider Gmail',
+            'email' => 'outsider@gmail.com',
+            'avatar' => 'https://lh3.googleusercontent.com/a/outsider',
         ]);
 
         $providerMock2 = Mockery::mock(GoogleProvider::class);
         $providerMock2->shouldReceive('stateless')->andReturnSelf();
         $providerMock2->shouldReceive('userFromToken')
-            ->with('real-google-jwt-or-access-token-2')
-            ->andReturn($socialiteUser2);
+            ->with('gmail-google-token')
+            ->andReturn($nonCampusGoogleUser);
         Socialite::shouldReceive('driver')->with('google')->once()->andReturn($providerMock2);
 
-        $googleFirst = $this->postJson('/api/auth/google', [
-            'credential' => 'real-google-jwt-or-access-token-2',
-        ]);
+        $this->postJson('/api/auth/google', [
+            'credential' => 'gmail-google-token',
+        ])->assertStatus(403)
+            ->assertJsonPath('success', false);
 
-        $googleFirst->assertOk()
-            ->assertJsonPath('data.user.auth_provider', 'google')
-            ->assertJsonPath('data.user.has_password', false);
-
-        $googleFirstUserId = $googleFirst->json('data.user.id');
-
-        // Manual login before setting password fails gracefully
-        $this->postJson('/api/auth/login', [
-            'email' => 'google.first@widyatama.ac.id',
-            'password' => 'AnyPassword123!',
-        ])->assertStatus(401);
-
-        // Registering manually with the same email links the password to the existing Google account
-        $linkManual = $this->postJson('/api/auth/register', [
-            'name' => 'Google First User',
-            'email' => 'google.first@widyatama.ac.id',
-            'password' => 'NewPassword123!',
-            'whatsapp' => '089876543210',
-        ]);
-
-        $linkManual->assertStatus(201)
-            ->assertJsonPath('data.user.id', $googleFirstUserId)
-            ->assertJsonPath('data.user.auth_provider', 'manual,google')
-            ->assertJsonPath('data.user.has_password', true);
-
-        // Now manual login succeeds on that same account
-        $this->postJson('/api/auth/login', [
-            'email' => 'google.first@widyatama.ac.id',
-            'password' => 'NewPassword123!',
-        ])->assertOk()->assertJsonPath('data.user.id', $googleFirstUserId);
-
-        // Ensure no duplicate email rows were created
+        $this->assertDatabaseMissing('users', ['email' => 'outsider@gmail.com']);
         $this->assertSame(1, User::where('email', 'same.email@widyatama.ac.id')->count());
-        $this->assertSame(1, User::where('email', 'google.first@widyatama.ac.id')->count());
     }
 }
