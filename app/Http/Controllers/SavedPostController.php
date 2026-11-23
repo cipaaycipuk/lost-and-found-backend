@@ -27,7 +27,7 @@ class SavedPostController extends Controller
             ->with([
                 'post' => fn ($query) => $query
                     ->with(['user', 'images'])
-                    ->withCount('comments'),
+                    ->withCount(['comments', 'claims']),
             ])
             ->latest()
             ->paginate($limit);
@@ -38,7 +38,7 @@ class SavedPostController extends Controller
             ->all();
 
         $data = collect($paginator->items())
-            ->map(fn (SavedPost $savedPost): array => $savedPost->post->toApiArray($user, $savedPostIds))
+            ->map(fn (SavedPost $savedPost): array => $savedPost->post->toApiArray($user, $savedPostIds, []))
             ->values()
             ->all();
 

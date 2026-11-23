@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Claim;
 use App\Models\Comment;
 use App\Models\Notification;
 use App\Models\Post;
@@ -22,7 +23,7 @@ class PostController extends Controller
     {
         $query = Post::query()
             ->with(['user', 'images'])
-            ->withCount('comments');
+            ->withCount(['comments', 'claims']);
 
         $this->applyFilters($query, $request);
 
@@ -31,10 +32,12 @@ class PostController extends Controller
 
         /** @var User|null $currentUser */
         $currentUser = auth('sanctum')->user();
-        $savedPostIds = $this->getSavedPostIds($currentUser, collect($paginator->items())->pluck('id')->all());
+        $postIds = collect($paginator->items())->pluck('id')->map(fn ($id): int => (int) $id)->all();
+        $savedPostIds = $this->getSavedPostIds($currentUser, $postIds);
+        $myClaimsByPostId = $this->getMyClaimsByPostId($currentUser, $postIds);
 
         $data = collect($paginator->items())
-            ->map(fn (Post $post): array => $post->toApiArray($currentUser, $savedPostIds))
+            ->map(fn (Post $post): array => $post->toApiArray($currentUser, $savedPostIds, $myClaimsByPostId))
             ->values()
             ->all();
 
@@ -62,17 +65,18 @@ class PostController extends Controller
         $query = Post::query()
             ->where('user_id', $user->id)
             ->with(['user', 'images'])
-            ->withCount('comments');
+            ->withCount(['comments', 'claims']);
 
         $this->applyFilters($query, $request);
 
         $limit = max(1, min(100, (int) $request->input('limit', 10)));
         $paginator = $query->paginate($limit);
 
-        $savedPostIds = $this->getSavedPostIds($user, collect($paginator->items())->pluck('id')->all());
+        $postIds = collect($paginator->items())->pluck('id')->map(fn ($id): int => (int) $id)->all();
+        $savedPostIds = $this->getSavedPostIds($user, $postIds);
 
         $data = collect($paginator->items())
-            ->map(fn (Post $post): array => $post->toApiArray($user, $savedPostIds))
+            ->map(fn (Post $post): array => $post->toApiArray($user, $savedPostIds, []))
             ->values()
             ->all();
 
@@ -90,6 +94,35 @@ class PostController extends Controller
     }
 
     /**
+     * Display soft-deleted posts belonging to the authenticated user (or all for admin).
+     */
+    public function trashed(Request $request): JsonResponse
+    {
+        /** @var User $user */
+        $user = $request->user();
+
+        $query = Post::onlyTrashed()
+            ->with(['user', 'images'])
+            ->withCount(['comments', 'claims'])
+            ->latest('deleted_at');
+
+        if ($user->role !== 'admin') {
+            $query->where('user_id', $user->id);
+        }
+
+        $posts = $query->get()
+            ->map(fn (Post $post): array => $post->toApiArray($user, [], []))
+            ->values()
+            ->all();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Berhasil mengambil daftar laporan terhapus',
+            'data' => $posts,
+        ]);
+    }
+
+    /**
      * Store a newly created post along with uploaded images.
      */
     public function store(Request $request): JsonResponse
@@ -101,9 +134,9 @@ class PostController extends Controller
             'location' => ['required', 'string', 'max:120'],
             'incident_date' => ['required', 'date'],
             'description' => ['required', 'string'],
-            'images' => ['nullable', 'array', 'max:5'],
-            'images.*' => ['file', 'mimes:jpeg,jpg,png,webp', 'max:5120'],
-            'image' => ['nullable', 'file', 'mimes:jpeg,jpg,png,webp', 'max:5120'],
+            'images' => ['nullable', 'array', 'max:3'],
+            'images.*' => ['file', 'mimes:jpeg,jpg,png', 'max:2048'],
+            'image' => ['nullable', 'file', 'mimes:jpeg,jpg,png', 'max:2048'],
         ]);
 
         /** @var User $user */
@@ -152,12 +185,14 @@ class PostController extends Controller
                 ->whereNull('parent_id')
                 ->with(['user', 'replies.user'])
                 ->orderBy('created_at'),
-        ])->loadCount('comments');
+        ])->loadCount(['comments', 'claims']);
 
         /** @var User|null $currentUser */
         $currentUser = auth('sanctum')->user();
+        $savedPostIds = $this->getSavedPostIds($currentUser, [$post->id]);
+        $myClaimsByPostId = $this->getMyClaimsByPostId($currentUser, [$post->id]);
 
-        $data = $post->toApiArray($currentUser);
+        $data = $post->toApiArray($currentUser, $savedPostIds, $myClaimsByPostId);
         $data['comments'] = $post->comments
             ->map(fn (Comment $comment): array => $comment->toApiArray())
             ->values()
@@ -193,9 +228,9 @@ class PostController extends Controller
             'location' => ['sometimes', 'required', 'string', 'max:120'],
             'incident_date' => ['sometimes', 'required', 'date'],
             'description' => ['sometimes', 'required', 'string'],
-            'images' => ['nullable', 'array', 'max:5'],
-            'images.*' => ['file', 'mimes:jpeg,jpg,png,webp', 'max:5120'],
-            'image' => ['nullable', 'file', 'mimes:jpeg,jpg,png,webp', 'max:5120'],
+            'images' => ['nullable', 'array', 'max:3'],
+            'images.*' => ['file', 'mimes:jpeg,jpg,png', 'max:2048'],
+            'image' => ['nullable', 'file', 'mimes:jpeg,jpg,png', 'max:2048'],
         ]);
 
         $previousStatus = $post->status;
@@ -229,7 +264,7 @@ class PostController extends Controller
     }
 
     /**
-     * Remove the specified post from storage.
+     * Soft-delete the specified post (can be restored later).
      */
     public function destroy(Request $request, Post $post): JsonResponse
     {
@@ -243,13 +278,42 @@ class PostController extends Controller
             ], 403);
         }
 
-        $this->deletePostImagesFromStorage($post);
         $post->delete();
 
         return response()->json([
             'success' => true,
-            'message' => 'Laporan berhasil dihapus',
-            'data' => null,
+            'message' => 'Laporan berhasil dipindahkan ke sampah (soft delete)',
+            'data' => [
+                'id' => $post->id,
+                'deleted_at' => $post->deleted_at?->toISOString(),
+            ],
+        ]);
+    }
+
+    /**
+     * Restore a soft-deleted post.
+     */
+    public function restore(Request $request, int $id): JsonResponse
+    {
+        /** @var User $user */
+        $user = $request->user();
+
+        $post = Post::onlyTrashed()->findOrFail($id);
+
+        if ($post->user_id !== $user->id && $user->role !== 'admin') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Anda tidak memiliki akses untuk memulihkan laporan ini',
+            ], 403);
+        }
+
+        $post->restore();
+        $post->load(['user', 'images'])->loadCount(['comments', 'claims']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Laporan berhasil dipulihkan',
+            'data' => $post->toApiArray($user, [], []),
         ]);
     }
 
@@ -368,6 +432,35 @@ class PostController extends Controller
             ->whereIn('post_id', $postIds)
             ->pluck('post_id')
             ->map(fn ($id): int => (int) $id)
+            ->all();
+    }
+
+    /**
+     * Batch-fetch the current user's claims for a set of posts to avoid N+1 queries.
+     *
+     * @param  array<int, int>  $postIds
+     * @return array<int, array<string, mixed>>
+     */
+    private function getMyClaimsByPostId(?User $user, array $postIds): array
+    {
+        if ($user === null || $postIds === []) {
+            return [];
+        }
+
+        return Claim::query()
+            ->where('claimer_id', $user->id)
+            ->whereIn('post_id', $postIds)
+            ->with('owner:id,whatsapp')
+            ->latest('id')
+            ->get()
+            ->unique('post_id')
+            ->mapWithKeys(fn (Claim $claim): array => [
+                $claim->post_id => [
+                    'id' => $claim->id,
+                    'status' => $claim->status,
+                    'owner_whatsapp' => $claim->status === 'accepted' ? $claim->owner?->whatsapp : null,
+                ],
+            ])
             ->all();
     }
 

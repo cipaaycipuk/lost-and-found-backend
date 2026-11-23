@@ -64,6 +64,17 @@ class DatabaseSeeder extends Seeder
             ]
         );
 
+        User::updateOrCreate(
+            ['email' => 'admin@widyatama.ac.id'],
+            [
+                'name' => 'Admin Kampus',
+                'password' => 'password123',
+                'whatsapp' => '0811 0000 1111',
+                'avatar_url' => '/users/emily.jpg',
+                'role' => 'admin',
+            ]
+        );
+
         // Post 1: Tumbler Minum Motif Leopard (Kehilangan - Rony Parulian)
         $post1 = Post::updateOrCreate(
             [

@@ -25,6 +25,44 @@ class ProfileController extends Controller
     }
 
     /**
+     * Display a user's public profile (hiding sensitive email & whatsapp unless viewing own profile).
+     */
+    public function publicShow(User $user): JsonResponse
+    {
+        /** @var User|null $viewer */
+        $viewer = auth('sanctum')->user();
+        $isSelfOrAdmin = $viewer !== null && ($viewer->id === $user->id || $viewer->role === 'admin');
+
+        $openPosts = $user->posts()
+            ->where('status', 'open')
+            ->with(['user', 'images'])
+            ->withCount(['comments', 'claims'])
+            ->latest('created_at')
+            ->get()
+            ->map(fn ($post): array => $post->toApiArray($viewer, [], []))
+            ->values()
+            ->all();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Berhasil mengambil profil pengguna',
+            'data' => [
+                'user' => [
+                    'id' => $user->id,
+                    'name' => $user->name,
+                    'email' => $isSelfOrAdmin ? $user->email : null,
+                    'whatsapp' => $isSelfOrAdmin ? $user->whatsapp : null,
+                    'avatar' => $user->avatar_url,
+                    'avatar_url' => $user->avatar_url,
+                    'role' => $user->role ?? 'user',
+                    'is_self' => $isSelfOrAdmin,
+                ],
+                'posts' => $openPosts,
+            ],
+        ]);
+    }
+
+    /**
      * Update the authenticated user's name, contact, and avatar.
      */
     public function update(Request $request): JsonResponse

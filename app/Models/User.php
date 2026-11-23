@@ -65,4 +65,20 @@ class User extends Authenticatable
         return $this->belongsToMany(Post::class, 'saved_posts')
             ->withTimestamps();
     }
+
+    /**
+     * @return HasMany<Claim, $this>
+     */
+    public function claimsSubmitted(): HasMany
+    {
+        return $this->hasMany(Claim::class, 'claimer_id');
+    }
+
+    /**
+     * @return HasMany<Claim, $this>
+     */
+    public function claimsReceived(): HasMany
+    {
+        return $this->hasMany(Claim::class, 'owner_id');
+    }
 }

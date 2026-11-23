@@ -1,6 +1,8 @@
 <?php
 
+use App\Http\Controllers\AdminController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\ClaimController;
 use App\Http\Controllers\CommentController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\PostController;
@@ -35,10 +37,18 @@ Route::middleware('auth:sanctum')->group(function (): void {
     // Authenticated Post Routes (placed before /posts/{post})
     Route::get('/posts/me', [PostController::class, 'myPosts']);
     Route::get('/posts/saved', [SavedPostController::class, 'index']);
+    Route::get('/posts/trashed', [PostController::class, 'trashed']);
     Route::post('/posts', [PostController::class, 'store']);
+    Route::post('/posts/{id}/restore', [PostController::class, 'restore'])->whereNumber('id');
     Route::match(['put', 'patch'], '/posts/{post}', [PostController::class, 'update'])->whereNumber('post');
     Route::patch('/posts/{post}/status', [PostController::class, 'update'])->whereNumber('post');
     Route::delete('/posts/{post}', [PostController::class, 'destroy'])->whereNumber('post');
+
+    // Claim Routes
+    Route::get('/claims/me', [ClaimController::class, 'myClaims']);
+    Route::get('/posts/{post}/claims', [ClaimController::class, 'postClaims'])->whereNumber('post');
+    Route::post('/posts/{post}/claims', [ClaimController::class, 'store'])->whereNumber('post');
+    Route::patch('/claims/{claim}/respond', [ClaimController::class, 'respond'])->whereNumber('claim');
 
     // Saved Posts / Bookmark Routes
     Route::post('/posts/{post}/bookmark', [SavedPostController::class, 'toggle'])->whereNumber('post');
@@ -55,9 +65,22 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('/notifications', [NotificationController::class, 'index']);
     Route::patch('/notifications/read-all', [NotificationController::class, 'markAllAsRead']);
     Route::patch('/notifications/{notification}/read', [NotificationController::class, 'markAsRead'])->whereNumber('notification');
+
+    // Admin Dashboard Routes
+    Route::prefix('admin')->group(function (): void {
+        Route::get('/stats', [AdminController::class, 'stats']);
+        Route::get('/posts', [AdminController::class, 'posts']);
+        Route::post('/posts/{id}/restore', [PostController::class, 'restore'])->whereNumber('id');
+        Route::delete('/posts/{post}', [PostController::class, 'destroy'])->whereNumber('post');
+        Route::get('/users', [AdminController::class, 'users']);
+        Route::patch('/users/{user}/role', [AdminController::class, 'updateUserRole'])->whereNumber('user');
+        Route::get('/claims', [AdminController::class, 'claims']);
+        Route::patch('/claims/{claim}/respond', [ClaimController::class, 'respond'])->whereNumber('claim');
+    });
 });
 
-// Public Post & Comment Routes
+// Public User Profile & Post Routes
+Route::get('/users/{user}', [ProfileController::class, 'publicShow'])->whereNumber('user');
 Route::get('/posts', [PostController::class, 'index']);
 Route::get('/posts/{post}', [PostController::class, 'show'])->whereNumber('post');
 Route::get('/posts/{post}/comments', [CommentController::class, 'index'])->whereNumber('post');

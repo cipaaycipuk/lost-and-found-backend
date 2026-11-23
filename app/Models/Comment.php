@@ -77,8 +77,6 @@ class Comment extends Model
             'author' => $author ? [
                 'id' => $author->id,
                 'name' => $author->name,
-                'email' => $author->email,
-                'whatsapp' => $author->whatsapp,
                 'avatar' => $author->avatar_url,
                 'avatar_url' => $author->avatar_url,
             ] : null,

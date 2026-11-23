@@ -153,12 +153,123 @@ class LostAndFoundApiTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.status', 'selesai');
 
-        // Owner can delete post
+        // Owner can soft-delete post and restore it
         $this->deleteJson("/api/posts/{$postId}")
             ->assertOk()
             ->assertJsonPath('success', true);
 
-        $this->assertDatabaseMissing('posts', ['id' => $postId]);
+        $this->assertSoftDeleted('posts', ['id' => $postId]);
+
+        $this->getJson('/api/posts/trashed')
+            ->assertOk()
+            ->assertJsonCount(1, 'data');
+
+        $this->postJson("/api/posts/{$postId}/restore")
+            ->assertOk()
+            ->assertJsonPath('data.id', $postId);
+
+        $this->assertDatabaseHas('posts', ['id' => $postId, 'deleted_at' => null]);
+    }
+
+    public function test_post_image_validation_enforces_max_3_and_jpeg_png_2mb(): void
+    {
+        Storage::fake('public');
+        $user = User::factory()->create();
+        Sanctum::actingAs($user);
+
+        // Reject > 3 photos
+        $fourImages = [
+            UploadedFile::fake()->create('1.jpg', 100, 'image/jpeg'),
+            UploadedFile::fake()->create('2.jpg', 100, 'image/jpeg'),
+            UploadedFile::fake()->create('3.png', 100, 'image/png'),
+            UploadedFile::fake()->create('4.png', 100, 'image/png'),
+        ];
+
+        $this->post('/api/posts', [
+            'type' => 'kehilangan',
+            'title' => 'Test Max Photos',
+            'category' => 'Lainnya',
+            'location' => 'Gedung A',
+            'incident_date' => '2026-09-10',
+            'description' => 'Test',
+            'images' => $fourImages,
+        ], ['Accept' => 'application/json'])->assertStatus(422);
+
+        // Reject > 2MB
+        $tooBig = UploadedFile::fake()->create('big.jpg', 2500, 'image/jpeg');
+        $this->post('/api/posts', [
+            'type' => 'kehilangan',
+            'title' => 'Test Size',
+            'category' => 'Lainnya',
+            'location' => 'Gedung A',
+            'incident_date' => '2026-09-10',
+            'description' => 'Test',
+            'images' => [$tooBig],
+        ], ['Accept' => 'application/json'])->assertStatus(422);
+    }
+
+    public function test_claim_workflow_and_oop_item_report_and_admin_endpoints(): void
+    {
+        $owner = User::factory()->create(['email' => 'owner@widyatama.ac.id', 'whatsapp' => '081111111111']);
+        $claimer = User::factory()->create(['email' => 'claimer@widyatama.ac.id', 'whatsapp' => '082222222222']);
+        $admin = User::factory()->create(['email' => 'admin.test@widyatama.ac.id', 'role' => 'admin']);
+
+        $post = Post::create([
+            'user_id' => $owner->id,
+            'type' => 'ditemukan',
+            'status' => 'open',
+            'title' => 'Dompet Kulit Hitam',
+            'category' => 'Dompet & Tas',
+            'location' => 'Gedung B',
+            'incident_date' => '2026-09-15',
+            'description' => 'Ditemukan di lantai 2',
+        ]);
+
+        // Public profile hides email & whatsapp
+        $this->getJson("/api/users/{$owner->id}")
+            ->assertOk()
+            ->assertJsonPath('data.user.email', null)
+            ->assertJsonPath('data.user.whatsapp', null);
+
+        // OOP check
+        $this->assertSame('Ajukan Klaim', $post->asReport()->getClaimActionLabel());
+
+        // Claimer submits claim
+        Sanctum::actingAs($claimer);
+        $claimRes = $this->postJson("/api/posts/{$post->id}/claims", [
+            'message' => 'Ada kartu KTM atas nama saya di dalamnya.',
+            'contact_whatsapp' => '082222222222',
+        ]);
+
+        $claimRes->assertStatus(201)
+            ->assertJsonPath('data.status', 'pending');
+
+        $claimId = $claimRes->json('data.id');
+
+        // Owner views received claims and accepts
+        Sanctum::actingAs($owner);
+        $this->getJson('/api/claims/me')
+            ->assertOk()
+            ->assertJsonCount(1, 'data.received');
+
+        $this->patchJson("/api/claims/{$claimId}/respond", [
+            'status' => 'accepted',
+            'owner_note' => 'Silakan ambil di pos satpam.',
+        ])->assertOk()
+            ->assertJsonPath('data.status', 'accepted')
+            ->assertJsonPath('data.owner.whatsapp', '081111111111');
+
+        $this->assertDatabaseHas('posts', ['id' => $post->id, 'status' => 'selesai']);
+
+        // Non-admin blocked from /api/admin/stats
+        $this->getJson('/api/admin/stats')->assertStatus(403);
+
+        // Admin can access stats, posts, users, claims
+        Sanctum::actingAs($admin);
+        $this->getJson('/api/admin/stats')->assertOk()->assertJsonPath('data.claims_accepted', 1);
+        $this->getJson('/api/admin/posts')->assertOk();
+        $this->getJson('/api/admin/users')->assertOk();
+        $this->getJson('/api/admin/claims')->assertOk();
     }
 
     public function test_comment_store_reply_and_destroy(): void
