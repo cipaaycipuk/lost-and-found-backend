@@ -206,6 +206,31 @@ class LostAndFoundApiTest extends TestCase
             'description' => 'Test',
             'images' => [$tooBig],
         ], ['Accept' => 'application/json'])->assertStatus(422);
+
+        // Keep existing image when adding a new image on update
+        $createRes = $this->post('/api/posts', [
+            'type' => 'kehilangan',
+            'title' => 'Post Dengan Foto',
+            'category' => 'Lainnya',
+            'location' => 'Gedung A',
+            'incident_date' => '2026-09-10',
+            'description' => 'Awalnya 1 foto',
+            'images' => [UploadedFile::fake()->create('first.jpg', 100, 'image/jpeg')],
+        ], ['Accept' => 'application/json'])->assertStatus(201);
+
+        $postId = $createRes->json('data.id');
+        $firstImageUrl = $createRes->json('data.images.0');
+
+        $updateRes = $this->post("/api/posts/{$postId}?_method=PUT", [
+            'title' => 'Post Dengan Foto Updated',
+            'sync_images' => 1,
+            'existing_images' => ['http://localhost:8000'.$firstImageUrl],
+            'images' => [UploadedFile::fake()->create('second.png', 100, 'image/png')],
+        ], ['Accept' => 'application/json']);
+
+        $updateRes->assertOk()
+            ->assertJsonCount(2, 'data.images')
+            ->assertJsonPath('data.images.0', $firstImageUrl);
     }
 
     public function test_claim_workflow_and_oop_item_report_and_admin_endpoints(): void

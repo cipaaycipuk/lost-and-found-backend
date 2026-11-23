@@ -13,6 +13,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
 
 class PostController extends Controller
 {
@@ -231,6 +232,9 @@ class PostController extends Controller
             'images' => ['nullable', 'array', 'max:3'],
             'images.*' => ['file', 'mimes:jpeg,jpg,png', 'max:2048'],
             'image' => ['nullable', 'file', 'mimes:jpeg,jpg,png', 'max:2048'],
+            'existing_images' => ['nullable', 'array', 'max:3'],
+            'existing_images.*' => ['string'],
+            'sync_images' => ['nullable', 'boolean'],
         ]);
 
         $previousStatus = $post->status;
@@ -246,11 +250,7 @@ class PostController extends Controller
         ])->all());
         $post->save();
 
-        if ($request->hasFile('images') || $request->hasFile('image')) {
-            $this->deletePostImagesFromStorage($post);
-            $post->images()->delete();
-            $this->storeUploadedImages($request, $post);
-        }
+        $this->syncPostImagesOnUpdate($request, $post);
 
         $this->notifyPostUpdate($post, $user, $previousStatus);
 
@@ -376,9 +376,81 @@ class PostController extends Controller
     /**
      * Store uploaded images (`images[]` or single `image`) for a post.
      */
-    private function storeUploadedImages(Request $request, Post $post): void
+    private function storeUploadedImages(Request $request, Post $post, int $startOrder = 0): void
     {
-        /** @var array<int, UploadedFile> $files */
+        $files = $this->extractUploadedFiles($request);
+
+        foreach (array_values($files) as $index => $file) {
+            $storedPath = $file->store('posts', 'public');
+            $post->images()->create([
+                'image_url' => Storage::url($storedPath),
+                'sort_order' => $startOrder + $index,
+            ]);
+        }
+    }
+
+    /**
+     * Preserve kept `existing_images[]` and append newly uploaded `images[]` on post update.
+     */
+    private function syncPostImagesOnUpdate(Request $request, Post $post): void
+    {
+        $hasExistingParam = $request->has('existing_images') || $request->boolean('sync_images');
+        $newFiles = $this->extractUploadedFiles($request);
+
+        if (! $hasExistingParam && $newFiles === []) {
+            return;
+        }
+
+        $post->load('images');
+        $nextOrder = 0;
+
+        if ($hasExistingParam) {
+            $keptPaths = collect($request->input('existing_images', []))
+                ->map(fn ($url): string => $this->normalizeImagePath((string) $url))
+                ->filter()
+                ->values()
+                ->all();
+
+            if (count($keptPaths) + count($newFiles) > 3) {
+                throw ValidationException::withMessages([
+                    'images' => ['Maksimal 3 foto per laporan.'],
+                ]);
+            }
+
+            foreach ($post->images as $existingImage) {
+                $normalizedExisting = $this->normalizeImagePath($existingImage->image_url);
+                if (in_array($normalizedExisting, $keptPaths, true)) {
+                    $existingImage->update(['sort_order' => $nextOrder]);
+                    $nextOrder++;
+                } else {
+                    if (str_starts_with($existingImage->image_url, '/storage/')) {
+                        $relativePath = substr($existingImage->image_url, strlen('/storage/'));
+                        Storage::disk('public')->delete($relativePath);
+                    }
+                    $existingImage->delete();
+                }
+            }
+        } else {
+            if ($post->images->count() + count($newFiles) > 3) {
+                throw ValidationException::withMessages([
+                    'images' => ['Maksimal 3 foto per laporan.'],
+                ]);
+            }
+            $nextOrder = $post->images->count();
+        }
+
+        if ($newFiles !== []) {
+            $this->storeUploadedImages($request, $post, $nextOrder);
+        }
+    }
+
+    /**
+     * Extract uploaded image files from `images[]` or single `image`.
+     *
+     * @return array<int, UploadedFile>
+     */
+    private function extractUploadedFiles(Request $request): array
+    {
         $files = [];
 
         if ($request->hasFile('images')) {
@@ -391,13 +463,22 @@ class PostController extends Controller
             }
         }
 
-        foreach (array_values($files) as $index => $file) {
-            $storedPath = $file->store('posts', 'public');
-            $post->images()->create([
-                'image_url' => Storage::url($storedPath),
-                'sort_order' => $index,
-            ]);
+        return array_values(array_filter($files, fn ($f): bool => $f instanceof UploadedFile));
+    }
+
+    /**
+     * Normalize full URL or relative path to comparable path (e.g. `/storage/posts/abc.jpg`).
+     */
+    private function normalizeImagePath(string $url): string
+    {
+        $trimmed = trim($url);
+        if ($trimmed === '') {
+            return '';
         }
+
+        $parsedPath = parse_url($trimmed, PHP_URL_PATH);
+
+        return is_string($parsedPath) && $parsedPath !== '' ? $parsedPath : $trimmed;
     }
 
     /**
